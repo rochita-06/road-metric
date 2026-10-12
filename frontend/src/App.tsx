@@ -321,11 +321,37 @@ function TrafficMap(props: {
 
 const SAMPLE_VIDEO_NAME = 'road-metric-hyderabad-traffic-sample.mp4'
 const SAMPLE_VEHICLE_COUNTS = { cars: 7, trucks: 2, buses: 1, motorcycles: 0 }
+let bundledSampleVideoPromise: Promise<Blob> | null = null
 
-async function generateTrafficSampleVideo(): Promise<Blob> {
-  const response = await fetch('/road-metric-hyderabad-traffic-sample.mp4')
-  if (!response.ok) throw new Error('The generated sample video could not be loaded.')
-  return response.blob()
+function generateTrafficSampleVideo(): Promise<Blob> {
+  if (!bundledSampleVideoPromise) {
+    bundledSampleVideoPromise = fetch('/road-metric-hyderabad-traffic-sample.mp4')
+      .then((response) => {
+        if (!response.ok) throw new Error('The generated sample video could not be loaded.')
+        return response.blob()
+      })
+      .catch((error: unknown) => {
+        bundledSampleVideoPromise = null
+        throw error
+      })
+  }
+  return bundledSampleVideoPromise
+}
+
+async function isBundledSampleVideo(file: File): Promise<boolean> {
+  if (!/^road-metric-hyderabad-traffic-sample\.(mp4|webm)$/i.test(file.name)) return false
+
+  try {
+    const sample = await generateTrafficSampleVideo()
+    if (file.size !== sample.size) return false
+
+    const [uploadedBytes, sampleBytes] = await Promise.all([file.arrayBuffer(), sample.arrayBuffer()])
+    const uploaded = new Uint8Array(uploadedBytes)
+    const bundled = new Uint8Array(sampleBytes)
+    return uploaded.every((byte, index) => byte === bundled[index])
+  } catch {
+    return false
+  }
 }
 
 async function analyzeUploadedVideo(
@@ -464,7 +490,6 @@ function App() {
   const [videoProgress, setVideoProgress] = useState(0)
   const [isAnalyzingVideo, setIsAnalyzingVideo] = useState(false)
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false)
-  const [generatedSampleSize, setGeneratedSampleSize] = useState<number | null>(null)
   const [videoError, setVideoError] = useState('')
   const [videoMessage, setVideoMessage] = useState('Generate the sample clip or choose a traffic video, then run analysis.')
 
@@ -490,7 +515,9 @@ function App() {
     setVideoMessage('Preparing the generated 8-second synthetic traffic clip…')
     try {
       const blob = await generateTrafficSampleVideo()
-      setGeneratedSampleSize(blob.size)
+      setVideoFile(new File([blob], SAMPLE_VIDEO_NAME, { type: blob.type || 'video/mp4' }))
+      setVideoAnalysis(null)
+      setVideoProgress(0)
       const downloadUrl = URL.createObjectURL(blob)
       const downloadLink = document.createElement('a')
       downloadLink.href = downloadUrl
@@ -499,7 +526,7 @@ function App() {
       downloadLink.click()
       downloadLink.remove()
       window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000)
-      setVideoMessage('Sample downloaded. Upload that MP4 file below to analyze its known 7 cars, 2 trucks, and 1 bus.')
+      setVideoMessage('Sample downloaded and ready for analysis. It contains 7 cars, 2 trucks, and 1 bus.')
     } catch (error) {
       setVideoError(error instanceof Error ? error.message : 'Could not generate the sample video.')
       setVideoMessage('Sample generation failed.')
@@ -517,11 +544,11 @@ function App() {
     setVideoProgress(4)
     setVideoError('')
     setVideoAnalysis(null)
-    const isKnownSample = videoFile.name === SAMPLE_VIDEO_NAME && videoFile.size === generatedSampleSize
-    setVideoMessage(isKnownSample
-      ? 'Reading the generated sample and its known vehicle counts…'
-      : 'Loading the in-browser vehicle detector; the first run downloads its model…')
     try {
+      const isKnownSample = await isBundledSampleVideo(videoFile)
+      setVideoMessage(isKnownSample
+        ? 'Reading the generated sample and its known vehicle counts…'
+        : 'Loading the in-browser vehicle detector; the first run downloads its model…')
       const result = await analyzeUploadedVideo(videoFile, isKnownSample, setVideoProgress)
       setVideoAnalysis(result)
       setVideoMessage(isKnownSample
@@ -740,8 +767,8 @@ function App() {
             const maxVolume = Math.max(...segments.map((item) => item.traffic_volume), 1)
             return (
             <div key={segment.id} className="bar-col">
-              <span className="bar" style={{ height: `${Math.max(12, (segment.traffic_volume / maxVolume) * 100)}%` }} title={`${segment.traffic_volume.toLocaleString()} vehicles per hour`} />
-              <small>{segment.id}</small>
+              <span className="bar" style={{ height: `${Math.max(12, (segment.traffic_volume / maxVolume) * 100)}%` }} title={`${segment.name}: ${segment.traffic_volume.toLocaleString()} vehicles per hour`} />
+              <small>{segment.name}</small>
             </div>
             )
           })}
