@@ -1,3 +1,7 @@
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -60,24 +64,35 @@ SEGMENTS = [
 ]
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    load_model_artifact()
+    yield
+
+
 app = FastAPI(
     title="FlowWatch API",
     description="Traffic flow and congestion monitoring backend.",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
-
-
-@app.on_event("startup")
-def startup() -> None:
-    load_model_artifact()
 
 
 @app.get("/api/health")
@@ -109,14 +124,19 @@ def traffic_segments() -> list[dict]:
 @app.get("/api/models/metrics")
 def model_metrics() -> dict:
     artifact = load_model_artifact()
-    frame = prepare_training_frame()
-    report = {
-        "dataset_source": artifact["source_file"],
-        "dataset_rows": int(len(frame)),
-        "dataset_date_range": {
+    dataset_rows = artifact.get("dataset_rows")
+    dataset_date_range = artifact.get("dataset_date_range")
+    if dataset_rows is None or dataset_date_range is None:
+        frame = prepare_training_frame()
+        dataset_rows = int(len(frame))
+        dataset_date_range = {
             "start": frame["date_time"].min().isoformat(),
             "end": frame["date_time"].max().isoformat(),
-        },
+        }
+    report = {
+        "dataset_source": artifact["source_file"],
+        "dataset_rows": dataset_rows,
+        "dataset_date_range": dataset_date_range,
         "model_version": "random_forest_v1",
         "metrics": artifact["metrics"],
     }

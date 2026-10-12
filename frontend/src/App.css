@@ -16,6 +16,25 @@
   border-bottom: 1px solid #d7d2ca;
 }
 
+.api-error-banner,
+.api-error-message {
+  color: #a63838;
+  background: #fff0ed;
+  border: 1px solid #e6b8ae;
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.api-error-banner {
+  margin: 14px 8px 0;
+  padding: 10px 12px;
+}
+
+.api-error-message {
+  margin: 0;
+  padding: 9px 11px;
+}
+
 .brand-block {
   display: flex;
   align-items: center;

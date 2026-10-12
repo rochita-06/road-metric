@@ -128,6 +128,21 @@ const getStatusColor = (status: SegmentStatus) => {
 
 const hyderabadCenter: [number, number] = [17.438, 78.411]
 const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY?.trim()
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, '') ?? ''
+
+function apiUrl(path: string): string {
+  const baseUrl = configuredApiBaseUrl || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
+  if (!baseUrl) {
+    throw new Error('Backend API is not configured. Set VITE_API_BASE_URL in the Vercel project settings to your Render service URL.')
+  }
+  return `${baseUrl}${path}`
+}
+
+function apiErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown network error'
+  if (message.startsWith('Backend API is not configured')) return message
+  return `Backend API unavailable: ${message}. Check that the Render service is running and VITE_API_BASE_URL is correct.`
+}
 
 let googleMapsLoadPromise: Promise<void> | null = null
 
@@ -440,6 +455,8 @@ function App() {
   const [page, setPage] = useState<PageKey>('overview')
   const [metrics, setMetrics] = useState<Record<string, number> | null>(null)
   const [prediction, setPrediction] = useState<number | null>(null)
+  const [predictionError, setPredictionError] = useState('')
+  const [apiError, setApiError] = useState('')
   const [predictionForm, setPredictionForm] = useState<PredictionPayload>(defaultPredictionForm)
   const [signalPlan, setSignalPlan] = useState<{ intersection: string; cycle_length_s: number; recommendations: SignalRecommendation[]; advisory_note: string } | null>(null)
   const [videoFile, setVideoFile] = useState<File | null>(null)
@@ -522,26 +539,24 @@ function App() {
     const loadData = async () => {
       try {
         const [segmentsResponse, summaryResponse] = await Promise.all([
-          fetch('http://127.0.0.1:8000/api/traffic/segments'),
-          fetch('http://127.0.0.1:8000/api/traffic/summary'),
+          fetch(apiUrl('/api/traffic/segments')),
+          fetch(apiUrl('/api/traffic/summary')),
         ])
-
-        if (segmentsResponse.ok) {
-          const payload = await segmentsResponse.json() as Segment[]
-          const nextSegments = payload.map((segment) => ({
-            ...segment,
-            status: (segment.status.charAt(0).toUpperCase() + segment.status.slice(1).toLowerCase()) as SegmentStatus,
-            coordinates: segment.coordinates ?? segmentCoordinates[segment.id],
-          }))
-          setSegments(nextSegments)
-          if (nextSegments.length > 0) setSelected(nextSegments[Math.min(2, nextSegments.length - 1)])
+        if (!segmentsResponse.ok || !summaryResponse.ok) {
+          throw new Error(`Traffic data request failed (HTTP ${segmentsResponse.status}/${summaryResponse.status}).`)
         }
 
-        if (summaryResponse.ok) {
-          const nextSummary = await summaryResponse.json()
-          setSummary(nextSummary)
-        }
-      } catch {
+        const payload = await segmentsResponse.json() as Segment[]
+        const nextSegments = payload.map((segment) => ({
+          ...segment,
+          status: (segment.status.charAt(0).toUpperCase() + segment.status.slice(1).toLowerCase()) as SegmentStatus,
+          coordinates: segment.coordinates ?? segmentCoordinates[segment.id],
+        }))
+        setSegments(nextSegments)
+        if (nextSegments.length > 0) setSelected(nextSegments[Math.min(2, nextSegments.length - 1)])
+        setSummary(await summaryResponse.json() as Summary)
+      } catch (error) {
+        setApiError(apiErrorMessage(error))
         setSegments(fallbackSegments)
         setSummary(fallbackSummary)
         setSelected(fallbackSegments[2])
@@ -554,13 +569,13 @@ function App() {
   useEffect(() => {
     const loadEvaluation = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/models/metrics')
-        if (response.ok) {
-          const payload = await response.json()
-          setMetrics(payload.metrics)
-        }
-      } catch {
-        setMetrics({ test_mae: 306.6, test_rmse: 421.2, test_r2: 0.83 })
+        const response = await fetch(apiUrl('/api/models/metrics'))
+        if (!response.ok) throw new Error(`Model metrics request failed (HTTP ${response.status}).`)
+        const payload = await response.json()
+        setMetrics(payload.metrics)
+      } catch (error) {
+        setApiError(apiErrorMessage(error))
+        setMetrics(null)
       }
     }
 
@@ -570,12 +585,11 @@ function App() {
   useEffect(() => {
     const loadSignals = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/signals/recommendations')
-        if (response.ok) {
-          const payload = await response.json()
-          setSignalPlan(payload)
-        }
-      } catch {
+        const response = await fetch(apiUrl('/api/signals/recommendations'))
+        if (!response.ok) throw new Error(`Signal recommendations request failed (HTTP ${response.status}).`)
+        setSignalPlan(await response.json())
+      } catch (error) {
+        setApiError(apiErrorMessage(error))
         setSignalPlan({
           intersection: 'Jubilee Hills Check Post',
           cycle_length_s: 90,
@@ -602,21 +616,25 @@ function App() {
   }
 
   const handlePredictionSubmit = async () => {
+    setPredictionError('')
+    setPrediction(null)
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/predictions/volume', {
+      const response = await fetch(apiUrl('/api/predictions/volume'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(predictionForm),
       })
 
       if (!response.ok) {
-        throw new Error('Prediction request failed')
+        throw new Error(`Prediction request failed (HTTP ${response.status}).`)
       }
 
       const payload = await response.json()
       setPrediction(payload.predicted_traffic_volume)
-    } catch {
-      setPrediction(4210)
+    } catch (error) {
+      const message = apiErrorMessage(error)
+      setPredictionError(message)
+      setApiError(message)
     }
   }
 
@@ -840,6 +858,7 @@ function App() {
           </label>
 
           <button className="primary-button" type="button" onClick={handlePredictionSubmit}>Predict volume</button>
+          {predictionError && <p className="api-error-message" role="alert">{predictionError}</p>}
         </div>
 
         <div className="prediction-output panel-inner">
@@ -1005,6 +1024,8 @@ function App() {
           {summary.data_source === 'simulated demo' ? 'Demo mode' : 'Live data'}
         </div>
       </header>
+
+      {apiError && <p className="api-error-banner" role="alert">{apiError}</p>}
 
       {page === 'overview' && renderOverview()}
       {page === 'map' && renderMap()}

@@ -188,7 +188,12 @@ Ensure you have the following installed:
    pip install -r requirements.txt
    ```
 
-4. **Start the FastAPI server**:
+4. **Download the dataset and train the model once** (not required on each startup):
+  ```bash
+  python -m ml.training
+  ```
+
+5. **Start the FastAPI server**:
    ```bash
    uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
@@ -268,6 +273,7 @@ curl -X POST "http://127.0.0.1:8000/api/predictions/volume" \
 Run backend automated tests:
 ```bash
 cd backend
+python -m ml.training  # Run once if the local dataset/model are missing.
 pytest
 ```
 
@@ -282,6 +288,36 @@ Build frontend for production:
 cd frontend
 npm run build
 ```
+
+---
+
+## ☁️ Production Deployment
+
+The Vite frontend and FastAPI/ML API deploy separately. Keep the Vercel project
+root at `frontend` with the Vite preset, `npm run build`, and `dist` output.
+Deploy the API from this repository using the root `render.yaml` blueprint;
+Render builds the real Random Forest artifact from the UCI dataset before the
+service starts. Runtime startup only reads that artifact and does not download
+data or train a model.
+
+After the API is deployed, set these service environment variables in Render:
+
+- `FRONTEND_ORIGINS`: the exact Vercel frontend origin, for example
+  `https://your-project.vercel.app` (include any additional origins explicitly,
+  comma-separated).
+- `PYTHON_VERSION`: `3.12.10` (also specified in `render.yaml`).
+
+Set `VITE_API_BASE_URL` in Vercel to the Render API base URL, for example
+`https://road-metric-api.onrender.com`, then redeploy the frontend. Do not add a
+trailing slash. For local development, omit this variable and run the backend at
+`http://127.0.0.1:8000`.
+
+If creating the Render service manually instead of using the blueprint, set its
+Root Directory to `backend`, Build Command to
+`pip install -r requirements.txt && python -m ml.training`, Start Command to
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT`, and Health Check Path to
+`/api/health`. The build needs outbound access to the UCI dataset URL in
+`backend/ml/training.py`.
 
 ---
 

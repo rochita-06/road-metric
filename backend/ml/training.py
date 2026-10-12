@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from urllib import request
@@ -48,7 +47,11 @@ def ensure_dataset_available(data_path: str | Path | None = None) -> Path:
 
 
 def prepare_training_frame(data_path: str | Path | None = None) -> pd.DataFrame:
-    dataset_path = ensure_dataset_available(data_path)
+    dataset_path = Path(data_path) if data_path is not None else DEFAULT_DATA_PATH
+    if not dataset_path.exists():
+        raise FileNotFoundError(
+            f"Dataset was not found at {dataset_path}. Run `python -m ml.training` during the build to download it and train the model."
+        )
     frame = pd.read_csv(dataset_path, compression="gzip")
     frame = frame.copy()
     frame["date_time"] = pd.to_datetime(frame["date_time"], errors="coerce")
@@ -89,7 +92,13 @@ def build_pipeline() -> Pipeline:
         remainder="drop",
     )
 
-    model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    model = RandomForestRegressor(
+        n_estimators=300,
+        max_leaf_nodes=256,
+        min_samples_leaf=2,
+        random_state=42,
+        n_jobs=-1,
+    )
     return Pipeline([("preprocessor", preprocessor), ("model", model)])
 
 
@@ -152,7 +161,12 @@ def train_and_save_model(data_path: str | Path | None = None, artifact_path: str
         "pipeline": pipeline,
         "feature_columns": FEATURE_COLUMNS,
         "metrics": metrics,
-        "source_file": str(dataset_path),
+        "source_file": DATA_URL,
+        "dataset_rows": int(len(frame)),
+        "dataset_date_range": {
+            "start": frame["date_time"].min().isoformat(),
+            "end": frame["date_time"].max().isoformat(),
+        },
         "trained_at": pd.Timestamp.now().isoformat(),
     }
     joblib.dump(artifact, artifact_file)
@@ -162,7 +176,10 @@ def train_and_save_model(data_path: str | Path | None = None, artifact_path: str
 def load_model_artifact(artifact_path: str | Path | None = None) -> dict[str, Any]:
     artifact_file = Path(artifact_path) if artifact_path else DEFAULT_ARTIFACT_PATH
     if not artifact_file.exists():
-        return train_and_save_model(artifact_path=artifact_file)
+        raise FileNotFoundError(
+            f"Trained model artifact was not found at {artifact_file}. "
+            "Train it during deployment build with `python -m ml.training`; runtime startup never trains or downloads data."
+        )
     return joblib.load(artifact_file)
 
 
@@ -200,3 +217,11 @@ def build_metrics_report() -> dict[str, Any]:
         },
         "metrics": metrics,
     }
+
+
+if __name__ == "__main__":
+    trained_artifact = train_and_save_model()
+    print(
+        "Trained traffic model from "
+        f"{trained_artifact['dataset_rows']} rows and saved it to {DEFAULT_ARTIFACT_PATH}"
+    )
